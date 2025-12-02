@@ -17,6 +17,7 @@ public class AdminService {
      *
      * Admin assigns or changes the room for an existing PT session.
      * This finalizes the booking by:
+     *  - checking that the admin manages the room
      *  - checking room conflicts
      *  - linking the room and admin
      *  - setting status to "VALIDATED"
@@ -35,6 +36,23 @@ public class AdminService {
             if (admin == null || pt == null || room == null) {
                 tx.rollback();
                 System.out.println("Invalid admin, session, or room id.");
+                return null;
+            }
+
+            // NEW: ensure this admin actually manages this room
+            Long manageCount = session.createQuery(
+                            "select count(m) " +
+                                    "from Manage m " +
+                                    "where m.admin.adminId = :aid " +
+                                    "and m.room.roomId = :rid",
+                            Long.class)
+                    .setParameter("aid", adminId)
+                    .setParameter("rid", roomId)
+                    .uniqueResult();
+
+            if (manageCount == null || manageCount == 0) {
+                tx.rollback();
+                System.out.println("Admin does not manage this room; cannot assign it.");
                 return null;
             }
 
@@ -94,7 +112,7 @@ public class AdminService {
                 return null;
             }
 
-            // optional: check that this admin manages the room of this equipment
+            // check that this admin manages the room of this equipment
             Long manageCount = session.createQuery(
                             "select count(m) " +
                                     "from Manage m " +

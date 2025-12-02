@@ -47,7 +47,7 @@ public class PTSessionService {
                 return null;
             }
 
-            // check trainer availability coverage
+            // 1) Check that there is an ACTIVE availability covering [start, end]
             Long covering = session.createQuery(
                             "select count(a) " +
                                     "from TrainerAvailability a " +
@@ -67,21 +67,47 @@ public class PTSessionService {
                 return null;
             }
 
-            // check trainer conflict
+            // 2) Check trainer does not already have a session in this window
             if (trainerHasSessionConflict(session, trainerId, start, end)) {
                 tx.rollback();
                 System.out.println("Trainer has another session in this time window.");
                 return null;
             }
 
+            // 3) Find ONE concrete availability slot and mark it as BOOKED
+            TrainerAvailability slot = session.createQuery(
+                            "from TrainerAvailability a " +
+                                    "where a.trainer.trainerId = :tid " +
+                                    "and a.status = 'ACTIVE' " +
+                                    "and a.startTime <= :start " +
+                                    "and a.endTime >= :end " +
+                                    "order by a.startTime",
+                            TrainerAvailability.class)
+                    .setParameter("tid", trainerId)
+                    .setParameter("start", start)
+                    .setParameter("end", end)
+                    .setMaxResults(1)
+                    .uniqueResult();
+
+            if (slot == null) {
+                tx.rollback();
+                System.out.println("No matching availability slot found to book.");
+                return null;
+            }
+
+            // 4) Create the PT session
             PTSession pt = new PTSession();
             pt.setMember(member);
             pt.setTrainer(trainer);
-            pt.setRoom(null);   // room to be assigned by Admin (A1)
-            pt.setAdmin(null);  // admin to be assigned by Admin (A1)
+            pt.setRoom(null);   // room to be assigned later by Admin (A1)
+            pt.setAdmin(null);
             pt.setStartTime(start);
             pt.setEndTime(end);
             pt.setStatus("PENDING");
+
+            // 5) Consume the slot so it no longer appears as ACTIVE
+            slot.setStatus("BOOKED");
+            session.merge(slot);
 
             session.persist(pt);
             tx.commit();
@@ -92,14 +118,17 @@ public class PTSessionService {
     /**
      * M4 - Reschedule (member)
      *
-     * Reschedule an existing session to a new time.
+     * Reschedule an existing session to a new time, using a concrete availability slot.
      *
      * Behaviour:
-     *  - Validates trainer availability and trainer conflicts for the new window
+     *  - Validates that the chosen availability belongs to the same trainer and covers [newStart, newEnd]
+     *  - Validates trainer conflicts for the new window (excluding this session)
+     *  - Frees the old BOOKED slot (if any)
+     *  - Marks the chosen slot as BOOKED
      *  - Clears room/admin and sets status back to "PENDING"
-     *    so that an admin must re-assign a room (A1) afterwards.
      */
     public PTSession rescheduleSession(long sessionId,
+                                       long availabilityId,
                                        LocalDateTime newStart,
                                        LocalDateTime newEnd) {
 
@@ -118,25 +147,32 @@ public class PTSessionService {
                 return null;
             }
 
-            long trainerId = pt.getTrainer().getTrainerId();
-
-            // check trainer availability coverage
-            Long covering = session.createQuery(
-                            "select count(a) " +
-                                    "from TrainerAvailability a " +
-                                    "where a.trainer.trainerId = :tid " +
-                                    "and a.status = 'ACTIVE' " +
-                                    "and a.startTime <= :start " +
-                                    "and a.endTime >= :end",
-                            Long.class)
-                    .setParameter("tid", trainerId)
-                    .setParameter("start", newStart)
-                    .setParameter("end", newEnd)
-                    .uniqueResult();
-
-            if (covering == null || covering == 0) {
+            if (pt.getTrainer() == null) {
                 tx.rollback();
-                System.out.println("Trainer is not available in this time window.");
+                System.out.println("Session has no trainer assigned; cannot reschedule.");
+                return null;
+            }
+
+            long trainerId = pt.getTrainer().getTrainerId();
+            LocalDateTime oldStart = pt.getStartTime();
+            LocalDateTime oldEnd   = pt.getEndTime();
+
+            // Load the chosen availability slot
+            TrainerAvailability newSlot = session.get(TrainerAvailability.class, availabilityId);
+            if (newSlot == null ||
+                    newSlot.getTrainer() == null ||
+                    newSlot.getTrainer().getTrainerId() != trainerId) {
+                tx.rollback();
+                System.out.println("Invalid availability selection for this trainer.");
+                return null;
+            }
+
+            // Check newSlot is ACTIVE and covers the new window
+            if (!"ACTIVE".equalsIgnoreCase(newSlot.getStatus()) ||
+                    newSlot.getStartTime().isAfter(newStart) ||
+                    newSlot.getEndTime().isBefore(newEnd)) {
+                tx.rollback();
+                System.out.println("Selected availability does not cover the requested time window.");
                 return null;
             }
 
@@ -147,12 +183,35 @@ public class PTSessionService {
                 return null;
             }
 
+            // Free old BOOKED slot (if any) that covered oldStart-oldEnd
+            TrainerAvailability oldSlot = session.createQuery(
+                            "from TrainerAvailability a " +
+                                    "where a.trainer.trainerId = :tid " +
+                                    "and a.status = 'BOOKED' " +
+                                    "and a.startTime <= :oldStart " +
+                                    "and a.endTime >= :oldEnd",
+                            TrainerAvailability.class)
+                    .setParameter("tid", trainerId)
+                    .setParameter("oldStart", oldStart)
+                    .setParameter("oldEnd", oldEnd)
+                    .setMaxResults(1)
+                    .uniqueResult();
+
+            if (oldSlot != null) {
+                oldSlot.setStatus("ACTIVE");
+                session.merge(oldSlot);
+            }
+
             // update to new time, clear room/admin, set back to PENDING
             pt.setStartTime(newStart);
             pt.setEndTime(newEnd);
             pt.setRoom(null);
             pt.setAdmin(null);
             pt.setStatus("PENDING");
+
+            // mark chosen slot as BOOKED
+            newSlot.setStatus("BOOKED");
+            session.merge(newSlot);
 
             session.merge(pt);
             tx.commit();
@@ -169,6 +228,7 @@ public class PTSessionService {
      *  - session belongs to the given member
      * Result:
      *  - status = 'CANCELLED'
+     *  - any matching BOOKED availability slot is freed back to ACTIVE
      */
     public PTSession cancelSessionAsMember(long memberId, long sessionId) {
 
@@ -186,6 +246,27 @@ public class PTSessionService {
                 tx.rollback();
                 System.out.println("This session does not belong to member " + memberId);
                 return null;
+            }
+
+            // Free BOOKED slot, if any
+            if (pt.getTrainer() != null) {
+                TrainerAvailability slot = session.createQuery(
+                                "from TrainerAvailability a " +
+                                        "where a.trainer.trainerId = :tid " +
+                                        "and a.status = 'BOOKED' " +
+                                        "and a.startTime <= :start " +
+                                        "and a.endTime >= :end",
+                                TrainerAvailability.class)
+                        .setParameter("tid", pt.getTrainer().getTrainerId())
+                        .setParameter("start", pt.getStartTime())
+                        .setParameter("end", pt.getEndTime())
+                        .setMaxResults(1)
+                        .uniqueResult();
+
+                if (slot != null) {
+                    slot.setStatus("ACTIVE");
+                    session.merge(slot);
+                }
             }
 
             pt.setStatus("CANCELLED");
@@ -241,4 +322,3 @@ public class PTSessionService {
         return count != null && count > 0;
     }
 }
-

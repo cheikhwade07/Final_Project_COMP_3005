@@ -6,20 +6,25 @@ import models.Equipment;
 import models.Manage;
 import models.Room;
 import models.Trainer;
+
+import models.TrainerAvailability;
+
 import org.hibernate.Session;
 import org.hibernate.Transaction;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 public class DataSeeder {
 
     /**
      * Seed minimal base data:
      * - 2 admins
-     * - 2 trainers
+     * - 3 trainers
      * - 2 rooms
      * - equipment in each room
      * - Manage(admin, room) links
+     * - Trainer availability slots (>= 2 per trainer)
      *
      * Safe to call multiple times: if admins already exist, it skips seeding.
      */
@@ -71,8 +76,17 @@ public class DataSeeder {
             trainer2.setHireDate(LocalDate.now().minusMonths(6));
             trainer2.setStatus("ACTIVE");
 
+
+            Trainer trainer3 = new Trainer();
+            trainer3.setFullName("Tony Trainer");
+            trainer3.setEmail("tony.trainer@example.com");
+            trainer3.setPasswordHash("trainer123");
+            trainer3.setHireDate(LocalDate.now().minusMonths(3));
+            trainer3.setStatus("ACTIVE");
+
             session.persist(trainer1);
             session.persist(trainer2);
+            session.persist(trainer3);
 
             // Rooms
             Room room1 = new Room();
@@ -111,19 +125,79 @@ public class DataSeeder {
             session.persist(eq2);
             session.persist(eq3);
 
-            // Make sure ids for admins/rooms are generated
+            // Make sure ids for admins/rooms/trainers are generated
             session.flush();
 
             // Manage relationships: admins manage rooms
             Manage m1 = new Manage(admin1, room1);
             Manage m2 = new Manage(admin2, room2);
 
-
             session.persist(m1);
             session.persist(m2);
 
+            // ---------------------------
+            // Trainer Availability Seeding
+            // ---------------------------
+            // Assumption: TrainerAvailability has:
+            // - Trainer trainer
+            // - LocalDateTime startTime
+            // - LocalDateTime endTime
+            // - String status ("ACTIVE" for usable slots)
+            // Adjust field names if your model is different.
 
+            LocalDateTime base = LocalDateTime.now()
+                    .withHour(9)
+                    .withMinute(0)
+                    .withSecond(0)
+                    .withNano(0)
+                    .plusDays(1); // start from tomorrow
 
+            // Trainer 1: two ACTIVE slots
+            TrainerAvailability t1Slot1 = new TrainerAvailability();
+            t1Slot1.setTrainer(trainer1);
+            t1Slot1.setStartTime(base);
+            t1Slot1.setEndTime(base.plusHours(1));
+            t1Slot1.setStatus("ACTIVE");
+
+            TrainerAvailability t1Slot2 = new TrainerAvailability();
+            t1Slot2.setTrainer(trainer1);
+            t1Slot2.setStartTime(base.plusHours(2));
+            t1Slot2.setEndTime(base.plusHours(3));
+            t1Slot2.setStatus("ACTIVE");
+
+            session.persist(t1Slot1);
+            session.persist(t1Slot2);
+
+            // Trainer 2: two ACTIVE slots
+            TrainerAvailability t2Slot1 = new TrainerAvailability();
+            t2Slot1.setTrainer(trainer2);
+            t2Slot1.setStartTime(base.plusDays(1)); // next day
+            t2Slot1.setEndTime(base.plusDays(1).plusHours(1));
+            t2Slot1.setStatus("ACTIVE");
+
+            TrainerAvailability t2Slot2 = new TrainerAvailability();
+            t2Slot2.setTrainer(trainer2);
+            t2Slot2.setStartTime(base.plusDays(1).plusHours(2));
+            t2Slot2.setEndTime(base.plusDays(1).plusHours(3));
+            t2Slot2.setStatus("ACTIVE");
+
+            session.persist(t2Slot1);
+            session.persist(t2Slot2);
+            // Trainer 3: two ACTIVE slots
+            TrainerAvailability t3Slot1 = new TrainerAvailability();
+            t3Slot1.setTrainer(trainer3);
+            t3Slot1.setStartTime(base.plusDays(2));
+            t3Slot1.setEndTime(base.plusDays(2).plusHours(1));
+            t3Slot1.setStatus("ACTIVE");
+
+            TrainerAvailability t3Slot2 = new TrainerAvailability();
+            t3Slot2.setTrainer(trainer3);
+            t3Slot2.setStartTime(base.plusDays(2).plusHours(2));
+            t3Slot2.setEndTime(base.plusDays(2).plusHours(3));
+            t3Slot2.setStatus("ACTIVE");
+
+            session.persist(t3Slot1);
+            session.persist(t3Slot2);
 
             tx.commit();
             System.out.println("Base data seeding complete.");

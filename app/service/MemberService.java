@@ -6,7 +6,7 @@ import models.HealthMetric;
 import models.Member;
 import org.hibernate.Session;
 import org.hibernate.Transaction;
-
+import models.PTSession;
 import java.time.LocalDate;
 import java.util.List;
 
@@ -233,7 +233,7 @@ public class MemberService {
     /**
      * Helper: fetch recent health metrics for a member (for the dashboard or tests).
      */
-    public List<HealthMetric> getMetricsForMember(long memberId, int limit) {
+    public List<HealthMetric> getMetricsForMember(long memberId) {
         try (Session session = HibernateUtil.getSessionFactory().openSession()) {
             return session.createQuery(
                             "from HealthMetric m " +
@@ -241,7 +241,6 @@ public class MemberService {
                                     "order by m.recordedDate desc",
                             HealthMetric.class)
                     .setParameter("mid", memberId)
-                    .setMaxResults(limit)
                     .getResultList();
         }
     }
@@ -259,5 +258,41 @@ public class MemberService {
                     .setParameter("mid", memberId)
                     .getResultList();
         }
+
     }
+    /**
+     * M2 – Delete a fitness goal for a member.
+     */
+    public boolean deleteFitnessGoal(long memberId, int goalSeq) {
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            Transaction tx = session.beginTransaction();
+
+            FitnessGoalId id = new FitnessGoalId(memberId, goalSeq);
+            FitnessGoal goal = session.get(FitnessGoal.class, id);
+            if (goal == null) {
+                tx.rollback();
+                System.out.println("Goal not found for member " + memberId + " seq " + goalSeq);
+                return false;
+            }
+
+            session.remove(goal);
+            tx.commit();
+            return true;
+        }
+    }
+    /**
+     * M4 – Fetch all PT sessions for a member.
+     */
+    public List<PTSession> getSessionsForMember(long memberId) {
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            return session.createQuery(
+                            "from PTSession s " +
+                                    "where s.member.memberId = :mid " +
+                                    "order by s.startTime",
+                            PTSession.class)
+                    .setParameter("mid", memberId)
+                    .getResultList();
+        }
+    }
+
 }

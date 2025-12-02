@@ -13,6 +13,7 @@ import org.hibernate.Session;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
 
@@ -235,29 +236,33 @@ public class ConsoleApp {
             System.out.println("1) Update profile (M2)");
             System.out.println("2) Add fitness goal (M2)");
             System.out.println("3) Log health metric (M3)");
-            System.out.println("4) View recent metrics");
+            System.out.println("4) View health logs (M3)");
             System.out.println("5) Request PT session (M4)");
             System.out.println("6) Reschedule PT session (M4)");
             System.out.println("7) Cancel PT session (M4)");
             System.out.println("8) View fitness goals (M2)");
-            System.out.println("9) Update fitness goal (M2)");
+            System.out.println("9) Update/delete fitness goal (M2)");
+            System.out.println("10) View PT sessions (M4)");
             System.out.println("0) Logout");
             System.out.print("Choice: ");
+
 
             String choice = scanner.nextLine().trim();
             switch (choice) {
                 case "1" -> handleUpdateProfile(member);
                 case "2" -> handleAddFitnessGoal(member);
                 case "3" -> handleLogHealthMetric(member);
-                case "4" -> handleViewRecentMetrics(member);
+                case "4" -> handleViewHealthLogs(member);
                 case "5" -> handleRequestPTSession(member);
                 case "6" -> handleRescheduleSession(member);
                 case "7" -> handleCancelSession(member);
                 case "8" -> handleViewFitnessGoals(member);
                 case "9" -> handleUpdateFitnessGoal(member);
+                case "10" -> handleViewPTSessions(member);
                 case "0" -> loggedIn = false;
                 default -> System.out.println("Invalid choice.");
             }
+
         }
     }
 
@@ -375,17 +380,37 @@ public class ConsoleApp {
         }
     }
 
-    private void handleViewRecentMetrics(Member member) {
-        System.out.println("--- Recent Health Metrics ---");
-        int limit = readRequiredInt("How many entries to show? ");
-        List<HealthMetric> metrics =
-                memberService.getMetricsForMember(member.getMemberId(), limit);
-        if (metrics.isEmpty()) {
-            System.out.println("No metrics found.");
-        } else {
-            metrics.forEach(System.out::println);
+    private void handleViewHealthLogs(Member member) {
+        System.out.println("--- Health Logs (M3) ---");
+
+        List<HealthMetric> logs = memberService.getMetricsForMember(member.getMemberId());
+        if (logs.isEmpty()) {
+            System.out.println("No health logs found.");
+            return;
         }
+
+        System.out.println("+---------------------------------------------------------------------+");
+        System.out.println("| ID   | Date       | Weight | Height | HeartRate | BodyFat%         |");
+        System.out.println("+---------------------------------------------------------------------+");
+        for (HealthMetric m : logs) {
+            String weightStr = (m.getWeight() != null) ? String.format("%.1f", m.getWeight()) : "-";
+            String heightStr = (m.getHeight() != null) ? String.format("%.2f", m.getHeight()) : "-";
+            String hrStr     = (m.getHeartRate() != null) ? m.getHeartRate().toString() : "-";
+            String bfStr     = (m.getBodyFatPct() != null) ? String.format("%.1f", m.getBodyFatPct()) : "-";
+
+            System.out.printf(
+                    "| %-4d | %-10s | %-6s | %-6s | %-9s | %-16s |%n",
+                    m.getMetricId(),
+                    m.getRecordedDate(),
+                    weightStr,
+                    heightStr,
+                    hrStr,
+                    bfStr
+            );
+        }
+        System.out.println("+---------------------------------------------------------------------+");
     }
+
 
     private void handleViewFitnessGoals(Member member) {
         System.out.println("--- Your Fitness Goals (M2) ---");
@@ -403,10 +428,23 @@ public class ConsoleApp {
             return;
         }
 
-        // 2) Ask which goal to update
-        int seq = readRequiredInt("Enter goal sequence to update: ");
+        // 2) Ask which goal to act on
+        int seq = readRequiredInt("Enter goal sequence: ");
 
-        // 3) Ask what to modify
+        // 2.5) Ask if we want to delete instead of update
+        System.out.print("Do you want to DELETE this goal? (y/N): ");
+        String delAnswer = scanner.nextLine().trim();
+        if (delAnswer.equalsIgnoreCase("y") || delAnswer.equalsIgnoreCase("yes")) {
+            boolean deleted = memberService.deleteFitnessGoal(member.getMemberId(), seq);
+            if (deleted) {
+                System.out.println("Goal deleted successfully.");
+            } else {
+                System.out.println("Goal deletion failed (goal may not exist).");
+            }
+            return;
+        }
+
+        // 3) Otherwise, proceed with update
         System.out.print("New status (e.g. ACTIVE, COMPLETED) (empty or '-' to keep): ");
         String statusInput = scanner.nextLine().trim();
         String newStatus = null;
@@ -436,6 +474,7 @@ public class ConsoleApp {
             System.out.println("Goal update failed (goal may not exist).");
         }
     }
+
 
 
     private void handleRequestPTSession(Member member) {
@@ -489,21 +528,97 @@ public class ConsoleApp {
         }
     }
 
+    private void handleViewPTSessions(Member member) {
+        System.out.println("--- Your PT Sessions (M4) ---");
+        listMemberSessions(member);
+    }
+
     private void handleRescheduleSession(Member member) {
         System.out.println("--- Reschedule PT Session (M4) ---");
         listMemberSessions(member);
 
         long sid = readRequiredLong("Enter session id to reschedule: ");
-        LocalDateTime newStart = readRequiredDateTime("New start time (YYYY-MM-DDTHH:MM): ");
-        LocalDateTime newEnd = readRequiredDateTime("New end time   (YYYY-MM-DDTHH:MM): ");
 
-        PTSession s = ptSessionService.rescheduleSession(sid, newStart, newEnd);
+        // Load the session to find its trainer and verify ownership
+        PTSession sessionEntity;
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            sessionEntity = session.get(PTSession.class, sid);
+        }
+
+        if (sessionEntity == null) {
+            System.out.println("Session not found.");
+            return;
+        }
+        if (sessionEntity.getMember() == null ||
+                sessionEntity.getMember().getMemberId() != member.getMemberId()) {
+            System.out.println("You can only reschedule your own sessions.");
+            return;
+        }
+        if (sessionEntity.getTrainer() == null) {
+            System.out.println("Session has no trainer assigned yet; cannot reschedule using trainer availability.");
+            return;
+        }
+
+        long trainerId = sessionEntity.getTrainer().getTrainerId();
+
+        // Show only ACTIVE availability slots for this trainer
+        List<TrainerAvailability> allSlots = trainerService.getAllActiveAvailabilities();
+        List<TrainerAvailability> trainerSlots = new ArrayList<>();
+        for (TrainerAvailability a : allSlots) {
+            if (a.getTrainer() != null && a.getTrainer().getTrainerId() == trainerId) {
+                trainerSlots.add(a);
+            }
+        }
+
+        if (trainerSlots.isEmpty()) {
+            System.out.println("This trainer has no ACTIVE availability slots to reschedule into.");
+            return;
+        }
+
+        System.out.println("Available slots for trainer " + sessionEntity.getTrainer().getFullName() + ":");
+        System.out.println("+--------------------------------------------------------------------------------+");
+        System.out.println("| ID  | Trainer           | Start               | End                 | Status   |");
+        System.out.println("+--------------------------------------------------------------------------------+");
+        for (TrainerAvailability a : trainerSlots) {
+            System.out.printf("| %-3d | %-17s | %-19s | %-19s | %-8s |%n",
+                    a.getAvailabilityId(),
+                    a.getTrainer().getFullName(),
+                    a.getStartTime(),
+                    a.getEndTime(),
+                    a.getStatus());
+        }
+        System.out.println("+--------------------------------------------------------------------------------+");
+
+        long availabilityId = readRequiredLong("Enter Availability ID to move session to: ");
+
+        TrainerAvailability chosen;
+        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
+            chosen = session.get(TrainerAvailability.class, availabilityId);
+        }
+
+        if (chosen == null ||
+                chosen.getTrainer() == null ||
+                chosen.getTrainer().getTrainerId() != trainerId ||
+                !"ACTIVE".equalsIgnoreCase(chosen.getStatus())) {
+            System.out.println("Invalid availability selection.");
+            return;
+        }
+
+        PTSession s = ptSessionService.rescheduleSession(
+                sid,
+                availabilityId,
+                chosen.getStartTime(),
+                chosen.getEndTime()
+        );
+
         if (s != null) {
-            System.out.println("Session rescheduled, now status=" + s.getStatus());
+            System.out.println("Session rescheduled to " + s.getStartTime() +
+                    ", now status=" + s.getStatus());
         } else {
             System.out.println("Reschedule failed.");
         }
     }
+
 
     private void handleCancelSession(Member member) {
         System.out.println("--- Cancel PT Session (M4) ---");
@@ -523,27 +638,28 @@ public class ConsoleApp {
     }
 
     private void listMemberSessions(Member member) {
-        try (Session session = HibernateUtil.getSessionFactory().openSession()) {
-            List<PTSession> sessions = session.createQuery(
-                            "from PTSession s " +
-                                    "where s.member.memberId = :mid " +
-                                    "order by s.startTime",
-                            PTSession.class)
-                    .setParameter("mid", member.getMemberId())
-                    .getResultList();
-            if (sessions.isEmpty()) {
-                System.out.println("No sessions for this member.");
-            } else {
-                for (PTSession s : sessions) {
-                    System.out.println("  id=" + s.getSessionId() +
-                            " trainer=" + (s.getTrainer() != null ? s.getTrainer().getFullName() : "?") +
-                            " start=" + s.getStartTime() +
-                            " end=" + s.getEndTime() +
-                            " status=" + s.getStatus());
-                }
+        List<PTSession> sessions = memberService.getSessionsForMember(member.getMemberId());
+        if (sessions.isEmpty()) {
+            System.out.println("No sessions for this member.");
+        } else {
+            System.out.println("+-------------------------------------------------------------------------------+");
+            System.out.println("| ID  | Trainer           | Start               | End                 | Status  |");
+            System.out.println("+-------------------------------------------------------------------------------+");
+            for (PTSession s : sessions) {
+                String trainerName = (s.getTrainer() != null ? s.getTrainer().getFullName() : "-");
+                System.out.printf(
+                        "| %-3d | %-17s | %-19s | %-19s | %-7s |%n",
+                        s.getSessionId(),
+                        trainerName,
+                        s.getStartTime(),
+                        s.getEndTime(),
+                        s.getStatus()
+                );
             }
+            System.out.println("+-------------------------------------------------------------------------------+");
         }
     }
+
 
     // ========================== TRAINER FLOW ==========================
 
@@ -696,6 +812,7 @@ public class ConsoleApp {
     private void handleAssignRoomToSession(Admin admin) {
         System.out.println("--- Assign Room to PT Session (A1) ---");
 
+        // 1) Show all PENDING / RESCHEDULED sessions in a table
         try (Session session = HibernateUtil.getSessionFactory().openSession()) {
             List<PTSession> sessions = session.createQuery(
                             "from PTSession s " +
@@ -703,34 +820,63 @@ public class ConsoleApp {
                                     "order by s.startTime",
                             PTSession.class)
                     .getResultList();
+
             if (sessions.isEmpty()) {
                 System.out.println("No pending or rescheduled sessions.");
                 return;
             }
+
+            System.out.println("+----------------------------------------------------------------------------------------------+");
+            System.out.println("| ID  | Member              | Trainer             | Start              | End                | Status  |");
+            System.out.println("+----------------------------------------------------------------------------------------------+");
             for (PTSession s : sessions) {
-                System.out.println("  id=" + s.getSessionId() +
-                        " member=" + (s.getMember() != null ? s.getMember().getFullName() : "?") +
-                        " trainer=" + (s.getTrainer() != null ? s.getTrainer().getFullName() : "?") +
-                        " start=" + s.getStartTime() +
-                        " end=" + s.getEndTime() +
-                        " status=" + s.getStatus());
+                String memberName  = (s.getMember()  != null ? s.getMember().getFullName()  : "-");
+                String trainerName = (s.getTrainer() != null ? s.getTrainer().getFullName() : "-");
+
+                System.out.printf(
+                        "| %-3d | %-18s | %-18s | %-18s | %-18s | %-7s |%n",
+                        s.getSessionId(),
+                        memberName,
+                        trainerName,
+                        s.getStartTime(),
+                        s.getEndTime(),
+                        s.getStatus()
+                );
             }
+            System.out.println("+----------------------------------------------------------------------------------------------+");
         }
 
         long sid = readRequiredLong("Session id to assign room to: ");
 
+        // 2) Show only rooms managed by this admin
         try (Session session = HibernateUtil.getSessionFactory().openSession()) {
-            List<Room> rooms = session.createQuery("from Room", Room.class).getResultList();
+            List<Room> rooms = session.createQuery(
+                            "select m.room " +
+                                    "from Manage m " +
+                                    "where m.admin.adminId = :aid " +
+                                    "order by m.room.roomId",
+                            Room.class)
+                    .setParameter("aid", admin.getAdminId())
+                    .getResultList();
+
             if (rooms.isEmpty()) {
-                System.out.println("No rooms in system.");
+                System.out.println("You do not manage any rooms.");
                 return;
             }
-            System.out.println("Available rooms:");
+
+            System.out.println("Rooms you manage:");
+            System.out.println("+-------------------------------------------------+");
+            System.out.println("| RoomID | Type       | Status                    |");
+            System.out.println("+-------------------------------------------------+");
             for (Room r : rooms) {
-                System.out.println("  id=" + r.getRoomId() +
-                        " type=" + r.getRoomType() +
-                        " status=" + r.getStatus());
+                System.out.printf(
+                        "| %-6d | %-10s | %-24s |%n",
+                        r.getRoomId(),
+                        r.getRoomType(),
+                        r.getStatus()
+                );
             }
+            System.out.println("+-------------------------------------------------+");
         }
 
         long rid = readRequiredLong("Room id: ");
@@ -818,6 +964,7 @@ public class ConsoleApp {
 
         return goals;
     }
+
     // Pretty-print a table of equipment with room info for A2
     private void printEquipmentTable(List<Equipment> eqs) {
         if (eqs == null || eqs.isEmpty()) {
