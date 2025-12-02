@@ -11,7 +11,8 @@ Console-based gym management system using **Java + Hibernate** with three roles:
 - **Trainer** – availability and schedule (T1–T2)  
 - **Admin** – room assignment and equipment maintenance (A1–A2)
 
----
+Demo video: https://youtu.be/XXXXXXXXXXX  
+
 
 ## 1. Prerequisites
 
