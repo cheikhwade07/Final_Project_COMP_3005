@@ -375,5 +375,4 @@ Backend (AdminService.updateEquipmentStatus):
 At any time, you can return to a clean state:
 
 Main Menu -> 9) Reset database to base seed
-BUT following the ReadMe You shouldn't meet any major issues.
 
